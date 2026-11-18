@@ -24,6 +24,12 @@ This is adapted from Andrej Karpathy's LLM Council. He dispatches queries to mul
 2. **Parallelism Rule:** Always invoke all 5 advisors in parallel in a single turn (Step 2), and all 5 peer reviewers in parallel in a single turn (Step 3). Never run them sequentially.
 3. **Anonymization Rule:** Always shuffle/permute the 5 advisor responses before labeling them `Response A` through `Response E` for Step 3. Never pass advisor names to peer reviewers.
 4. **Isolation Rule:** Advisors and peer reviewers must NOT modify files, run commands, or independently search the workspace. Only the coordinator gathers context in Step 1.
+5. **Strict Synchronization Barrier Rule:** Antigravity delivers each subagent's reply asynchronously as a separate `<SYSTEM_MESSAGE>` across one or more wakeups. When waiting for a parallel batch of 5 subagents (Step 2 or Step 3):
+   - Record the 5 `conversationId` values returned by `invoke_subagent`.
+   - End your turn cleanly (call no more tools, and do **NOT** emit repetitive progress text like `"Aguardando 1/5... 2/5..."` or simulate remaining turns).
+   - On each wakeup, count how many **distinct** `sender` IDs from the current batch have delivered a `<SYSTEM_MESSAGE>` in the conversation history so far.
+   - If fewer than all 5 `sender` IDs have arrived, **end your turn again immediately** without calling any tools.
+   - **NEVER** start Step 3 until all 5 advisor `<SYSTEM_MESSAGE>` replies are present verbatim, and **NEVER** start Step 4 until all 5 peer review `<SYSTEM_MESSAGE>` replies are present verbatim. Never invent, extrapolate, or placeholder-fill missing subagent responses.
 
 ---
 
@@ -120,7 +126,7 @@ Now spawn **all 5 advisors simultaneously in a single turn** by calling `invoke_
 4. `Role`: `"Advisor: The Outsider"`
 5. `Role`: `"Advisor: The Executor"`
 
-After issuing the 5 `invoke_subagent` calls, **stop calling tools** and wait for all 5 subagent messages to arrive via Antigravity's reactive wakeup.
+After issuing the 5 `invoke_subagent` calls, record their 5 `conversationId` values, **stop calling tools**, and end your turn cleanly (no progress-counter narration). On each wakeup, check whether all 5 advisor `sender` IDs have delivered a `<SYSTEM_MESSAGE>`; if fewer than 5 have arrived, end your turn again and wait for the remaining reactive wakeups before moving to Step 3.
 
 **Advisor subagent prompt template:**
 
@@ -149,11 +155,11 @@ Instructions:
 
 This is the step that makes the council more than just "ask 5 times." It's the core of Karpathy's insight.
 
-1. Collect all 5 advisor responses.
+1. **Verify barrier first:** Confirm that all 5 advisor `<SYSTEM_MESSAGE>` replies (matching all 5 Step 2 `conversationId`s) have actually arrived in the conversation context. Use the exact verbatim responses received—never reconstruct or invent any advisor response.
 2. **Randomize / permute the order** of the 5 advisors (do NOT keep the fixed 1–5 order so there is no positional bias) and label them `Response A` through `Response E`.
 3. Keep the mapping (`Response A -> Advisor X`, ..., `Response E -> Advisor Y`) strictly private for Step 4. Never reveal advisor identities to the reviewers.
 4. Spawn **5 new `invoke_subagent` calls simultaneously in a single turn** (`TypeName: "council-member"`), with `Role` `"Peer Reviewer 1"` through `"Peer Reviewer 5"`.
-5. Stop calling tools and wait for all 5 peer review messages to arrive.
+5. Record the 5 reviewer `conversationId` values, **stop calling tools**, and end your turn cleanly (no progress-counter narration). On each wakeup, verify whether all 5 reviewer `sender` IDs have delivered a `<SYSTEM_MESSAGE>`; if fewer than 5 have arrived, end your turn again and wait.
 
 **Reviewer subagent prompt template:**
 
@@ -197,9 +203,11 @@ Instructions:
 
 ### Step 4: Chairman Synthesis
 
-This is the final analytical step. Invoke **1 subagent** (`TypeName: "council-member"`, `Role: "Council Chairman"`) that receives everything: the framed question, all 5 advisor responses **de-anonymized** (showing both the advisor name and their anonymous review letter `[Response X]` so the Chairman can accurately map peer critiques), and all 5 peer reviews.
+This is the final analytical step. First, **verify the Step 3 barrier**: confirm that all 5 peer reviewer `<SYSTEM_MESSAGE>` replies (matching all 5 Step 3 `conversationId`s) have actually arrived verbatim in the conversation context.
 
-Stop calling tools and wait for the Chairman's response.
+Then invoke **1 subagent** (`TypeName: "council-member"`, `Role: "Council Chairman"`) that receives everything: the framed question, all 5 advisor responses **de-anonymized** (showing both the advisor name and their anonymous review letter `[Response X]` so the Chairman can accurately map peer critiques), and all 5 peer reviews.
+
+Stop calling tools and end your turn cleanly until the Chairman's `<SYSTEM_MESSAGE>` arrives.
 
 **Chairman subagent prompt template:**
 
